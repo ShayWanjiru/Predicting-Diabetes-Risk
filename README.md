@@ -4,7 +4,7 @@
 **Shalyne Wanjiru Murage**  
 Bachelor of Science in Data Science and Analytics  
 United States International University – Africa  
-Summer Semester 2025  
+Fall Semester 2025  
 
 ---
 
