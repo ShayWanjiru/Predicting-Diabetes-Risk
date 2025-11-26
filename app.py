@@ -1,239 +1,368 @@
-# app.py  — Streamlit Cloud friendly with SHAP explanations
+# app.py
 
-import streamlit as st
-import pandas as pd
+import os
 import numpy as np
+import pandas as pd
+import streamlit as st
 import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    roc_curve,
+)
 
-import shap
+# Optional: SHAP (wrapped in try so the app still runs if shap fails to import)
+try:
+    import shap
 
+    HAS_SHAP = True
+except Exception:
+    HAS_SHAP = False
+
+# ---------------------------------------------------------------------
+# Streamlit page config
+# ---------------------------------------------------------------------
 st.set_page_config(
     page_title="Diabetes risk prediction (Pima dataset model)",
-    layout="wide"
+    layout="wide",
 )
 
 st.title("Diabetes risk prediction (Pima dataset model)")
 st.write(
-    "Prototype risk prediction model trained on the Pima Indians Diabetes dataset "
-    "and re-trained directly inside this app for Streamlit Cloud deployment."
+    "Prototype risk prediction model trained on the Pima Indians Diabetes "
+    "dataset (`diabetes.csv`) and re-trained directly inside this app for "
+    "Streamlit Cloud deployment."
 )
 
-# ---------- 1. LOAD DATA ----------
+DATA_PATH = "diabetes.csv"  # file should be in the repo root
 
-@st.cache_data
-def load_data():
-    # assumes diabetes.csv is in the same folder as app.py
-    df = pd.read_csv("diabetes.csv")
-    return df
 
-data = load_data()
-
-feature_cols = [
-    "Pregnancies",
-    "Glucose",
-    "BloodPressure",
-    "SkinThickness",
-    "Insulin",
-    "BMI",
-    "DiabetesPedigreeFunction",
-    "Age",
-]
-target_col = "Outcome"
-
-X = data[feature_cols].copy()
-y = data[target_col].copy()
-
-# ---------- 2. PREPROCESSING + MODEL ----------
-
+# ---------------------------------------------------------------------
+# 1. Load data and train model (cached)
+# ---------------------------------------------------------------------
 @st.cache_resource
-def train_model(X, y):
+def load_data_and_train():
+    if not os.path.exists(DATA_PATH):
+        st.error(f"Could not find `{DATA_PATH}` in the app directory.")
+        st.stop()
+
+    df = pd.read_csv(DATA_PATH)
+
+    # Expect Pima layout
+    feature_cols = [
+        "Pregnancies",
+        "Glucose",
+        "BloodPressure",
+        "SkinThickness",
+        "Insulin",
+        "BMI",
+        "DiabetesPedigreeFunction",
+        "Age",
+    ]
+    target_col = "Outcome"
+
+    X = df[feature_cols].copy()
+    y = df[target_col].astype(int)
+
+    # Train / test split
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=42
     )
 
-    # zeros treated as missing for selected variables
-    zero_as_missing = ["Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI"]
-
-    def zero_to_nan(df_in):
-        df = df_in.copy()
-        for col in zero_as_missing:
-            df.loc[df[col] == 0, col] = np.nan
-        return df
-
-    # small helper transformer for zero->NaN
-    class ZeroToNaNTransformer:
-        def fit(self, X, y=None):
-            return self
-        def transform(self, X):
-            return zero_to_nan(pd.DataFrame(X, columns=feature_cols)).values
-
-    preprocessor = Pipeline(
-        steps=[
-            ("zero_to_nan", ZeroToNaNTransformer()),
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ]
+    # Preprocessor (all numeric -> standardize)
+    numeric_features = feature_cols
+    numeric_transformer = Pipeline(
+        steps=[("scaler", StandardScaler())]
     )
 
-    rf = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=None,
-        min_samples_split=2,
-        min_samples_leaf=1,
+    preprocessor = ColumnTransformer(
+        transformers=[("num", numeric_transformer, numeric_features)]
+    )
+
+    # Random Forest classifier
+    clf = RandomForestClassifier(
+        n_estimators=100,
         random_state=42,
+        n_jobs=-1,
     )
 
     pipe = Pipeline(
         steps=[
             ("preprocessor", preprocessor),
-            ("classifier", rf),
+            ("classifier", clf),
         ]
     )
 
     pipe.fit(X_train, y_train)
 
-    # test ROC-AUC
-    proba_test = pipe.predict_proba(X_test)[:, 1]
-    roc_auc = roc_auc_score(y_test, proba_test)
+    # Evaluate on test set at default threshold 0.5
+    y_proba_test = pipe.predict_proba(X_test)[:, 1]
+    y_pred_test = (y_proba_test >= 0.5).astype(int)
 
-    return pipe, X_train, y_train, X_test, y_test, roc_auc
+    metrics = {
+        "accuracy": accuracy_score(y_test, y_pred_test),
+        "precision": precision_score(y_test, y_pred_test),
+        "recall": recall_score(y_test, y_pred_test),
+        "f1": f1_score(y_test, y_pred_test),
+        "roc_auc": roc_auc_score(y_test, y_proba_test),
+    }
+
+    fpr, tpr, _ = roc_curve(y_test, y_proba_test)
+
+    return pipe, X_train, X_test, y_train, y_test, metrics, (fpr, tpr)
 
 
-model, X_train, y_train, X_test, y_test, roc_auc = train_model(X, y)
+model, X_train, X_test, y_train, y_test, metrics, roc_points = load_data_and_train()
 
-st.write(f"**Internal test ROC–AUC of trained model:** `{roc_auc:.3f}`")
 
-# ---------- 3. SIDEBAR INPUTS ----------
-
+# ---------------------------------------------------------------------
+# 2. Sidebar: patient inputs and threshold
+# ---------------------------------------------------------------------
 st.sidebar.header("Patient input")
 
-Pregnancies = st.sidebar.number_input("Pregnancies", min_value=0, max_value=20, value=1, step=1)
-Glucose = st.sidebar.number_input("Glucose (mg/dL)", min_value=0, max_value=300, value=120, step=1)
-BloodPressure = st.sidebar.number_input("BloodPressure (mmHg)", min_value=0, max_value=200, value=70, step=1)
-SkinThickness = st.sidebar.number_input("SkinThickness (mm)", min_value=0, max_value=100, value=20, step=1)
-Insulin = st.sidebar.number_input("Insulin (µU/mL)", min_value=0, max_value=1000, value=80, step=1)
-BMI = st.sidebar.number_input("BMI (kg/m²)", min_value=10.0, max_value=70.0, value=30.0, step=0.1, format="%.1f")
-DiabetesPedigreeFunction = st.sidebar.number_input(
-    "DiabetesPedigreeFunction",
-    min_value=0.0, max_value=5.0, value=0.5, step=0.01, format="%.2f"
-)
-Age = st.sidebar.number_input("Age (years)", min_value=10, max_value=120, value=30, step=1)
+def sidebar_inputs():
+    Pregnancies = st.sidebar.number_input(
+        "Pregnancies", min_value=0, max_value=20, value=1, step=1
+    )
+    Glucose = st.sidebar.number_input(
+        "Glucose (mg/dL)", min_value=0, max_value=300, value=120, step=1
+    )
+    BloodPressure = st.sidebar.number_input(
+        "BloodPressure (mmHg)", min_value=0, max_value=200, value=70, step=1
+    )
+    SkinThickness = st.sidebar.number_input(
+        "SkinThickness (mm)", min_value=0, max_value=100, value=20, step=1
+    )
+    Insulin = st.sidebar.number_input(
+        "Insulin (µU/mL)", min_value=0, max_value=1000, value=80, step=1
+    )
+    BMI = st.sidebar.number_input(
+        "BMI (kg/m²)",
+        min_value=10.0,
+        max_value=70.0,
+        value=30.0,
+        step=0.1,
+        format="%.1f",
+    )
+    DiabetesPedigreeFunction = st.sidebar.number_input(
+        "DiabetesPedigreeFunction",
+        min_value=0.0,
+        max_value=5.0,
+        value=0.50,
+        step=0.01,
+        format="%.2f",
+    )
+    Age = st.sidebar.number_input(
+        "Age (years)", min_value=10, max_value=120, value=30, step=1
+    )
 
-threshold = st.sidebar.slider(
-    "Decision threshold for class 1 (diabetes)",
-    min_value=0.1, max_value=0.9, value=0.50, step=0.01,
-)
-st.sidebar.caption(
-    "Lower the threshold (e.g. 0.3) to prioritise recall in screening "
-    "contexts where missing high-risk individuals is costly."
-)
+    thresh = st.sidebar.slider(
+        "Decision threshold for class 1 (diabetes)",
+        min_value=0.1,
+        max_value=0.9,
+        value=0.5,
+        step=0.05,
+    )
+    st.sidebar.caption(
+        "Lower the threshold (e.g., 0.3) to prioritize recall in screening "
+        "contexts where missing high-risk individuals is costly."
+    )
 
-input_dict = {
-    "Pregnancies": Pregnancies,
-    "Glucose": Glucose,
-    "BloodPressure": BloodPressure,
-    "SkinThickness": SkinThickness,
-    "Insulin": Insulin,
-    "BMI": BMI,
-    "DiabetesPedigreeFunction": DiabetesPedigreeFunction,
-    "Age": Age,
-}
-df_in = pd.DataFrame([input_dict])
+    input_dict = {
+        "Pregnancies": Pregnancies,
+        "Glucose": Glucose,
+        "BloodPressure": BloodPressure,
+        "SkinThickness": SkinThickness,
+        "Insulin": Insulin,
+        "BMI": BMI,
+        "DiabetesPedigreeFunction": DiabetesPedigreeFunction,
+        "Age": Age,
+    }
 
+    return pd.DataFrame([input_dict]), thresh
+
+
+df_in, decision_threshold = sidebar_inputs()
+
+# ---------------------------------------------------------------------
+# 3. Main panel – input summary and internal metrics
+# ---------------------------------------------------------------------
 st.subheader("Input summary")
 st.table(df_in.T.rename(columns={0: "value"}))
 
-# ---------- 4. PREDICTION ----------
+st.markdown("**Internal test ROC–AUC of trained model:** "
+            f"`{metrics['roc_auc']:.3f}`")
 
+col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+col_m1.metric("Accuracy", f"{metrics['accuracy']:.3f}")
+col_m2.metric("Precision", f"{metrics['precision']:.3f}")
+col_m3.metric("Recall", f"{metrics['recall']:.3f}")
+col_m4.metric("F1-score", f"{metrics['f1']:.3f}")
+
+# ROC curve
+with st.expander("Show ROC curve"):
+    fpr, tpr = roc_points
+    fig_roc = plt.figure(figsize=(4, 4))
+    plt.plot(fpr, tpr, label=f"RandomForest (AUC = {metrics['roc_auc']:.3f})")
+    plt.plot([0, 1], [0, 1], "k--", label="Random guess")
+    plt.xlabel("False positive rate")
+    plt.ylabel("True positive rate")
+    plt.legend()
+    plt.tight_layout()
+    st.pyplot(fig_roc)
+
+
+# ---------------------------------------------------------------------
+# 4. Single-patient prediction
+# ---------------------------------------------------------------------
 if st.button("Predict risk"):
-    proba = model.predict_proba(df_in)[:, 1][0]
-    pred_class = int(proba >= threshold)
+    try:
+        proba = model.predict_proba(df_in)[:, 1]
+        pred_class = (proba >= decision_threshold).astype(int)[0]
+        risk = float(proba[0])
+    except Exception as e:
+        st.error(f"Model inference failed: {e}")
+        st.stop()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric(
-            "Predicted class (0 = no diabetes, 1 = diabetes)",
-            value=pred_class,
-        )
-    with col2:
-        st.metric(
-            "Predicted probability of diabetes",
-            value=f"{proba:.3f}",
-        )
-
+    st.success("Prediction complete.")
+    st.metric("Predicted class (0 = no diabetes, 1 = diabetes)", pred_class)
+    st.metric("Predicted probability of diabetes", f"{risk:.3f}")
     st.caption(
-        f"Decision threshold currently set to **{threshold:.2f}**. "
-        "Lower thresholds increase sensitivity (recall) but also increase false positives."
+        f"Current decision threshold = {decision_threshold:.2f}. "
+        "In screening scenarios, recall is often prioritized, so slightly "
+        "lower thresholds may be appropriate."
     )
 
-# ---------- 5. SHAP EXPLANATIONS ----------
 
-st.markdown("---")
+# ---------------------------------------------------------------------
+# 5. SHAP explanations (no Streamlit caching here)
+# ---------------------------------------------------------------------
+def get_shap_explainer(model, X_background: pd.DataFrame):
+    """
+    Build a SHAP TreeExplainer on a small background sample.
+    No Streamlit caching to avoid UnhashableParamError.
+    """
+    clf = model
+    preproc = None
+
+    if hasattr(model, "named_steps"):
+        preproc = model.named_steps.get("preprocessor")
+        clf = model.named_steps.get("classifier") or clf
+
+    # Apply preprocessing to background data if needed
+    if preproc is not None:
+        X_bg_proc = preproc.transform(X_background)
+    else:
+        X_bg_proc = X_background.values
+
+    explainer = shap.TreeExplainer(clf)
+    shap_vals_bg = explainer.shap_values(X_bg_proc)
+
+    feature_names = list(X_background.columns)
+    return explainer, shap_vals_bg, X_bg_proc, feature_names
+
+
 st.subheader("Model explanations (SHAP)")
-
 show_shap = st.checkbox("Show SHAP explanations", value=False)
 
-@st.cache_resource
-def get_shap_explainer(trained_model, background_df):
-    """
-    Build a TreeExplainer on a small background sample to keep it light
-    for Streamlit Cloud.
-    """
-    preproc = trained_model.named_steps["preprocessor"]
-    clf = trained_model.named_steps["classifier"]
-
-    # sample up to 200 rows for background
-    bg = background_df.sample(
-        n=min(200, len(background_df)), random_state=42
-    )
-
-    X_bg_proc = preproc.transform(bg)
-    explainer = shap.TreeExplainer(clf)
-    shap_values = explainer.shap_values(X_bg_proc)
-    return explainer, shap_values, bg
-
 if show_shap:
-    explainer, shap_vals_bg, bg_df = get_shap_explainer(model, X_train)
+    if not HAS_SHAP:
+        st.warning(
+            "SHAP is not installed or could not be imported in this environment."
+        )
+    else:
+        with st.spinner("Computing SHAP explanations…"):
+            # Background sample for global SHAP
+            bg_sample = X_train.sample(
+                n=min(200, len(X_train)), random_state=42
+            )
 
-    # 5a. Global summary plot
-    st.markdown("**Global feature importance (SHAP summary plot)**")
+            explainer, shap_vals_bg, X_bg_proc, feat_names = get_shap_explainer(
+                model, bg_sample
+            )
 
-    fig1, ax1 = plt.subplots(figsize=(8, 4))
-    # for binary RF, shap_values is a list; use index 1 (positive class)
-    sv_bg = shap_vals_bg[1] if isinstance(shap_vals_bg, list) else shap_vals_bg
-    shap.summary_plot(sv_bg, bg_df, show=False, plot_type="dot")
-    st.pyplot(fig1)
+            # Local explanation: current patient
+            if hasattr(model, "named_steps"):
+                preproc = model.named_steps.get("preprocessor")
+                if preproc is not None:
+                    x_current_proc = preproc.transform(df_in)
+                else:
+                    x_current_proc = df_in.values
+            else:
+                x_current_proc = df_in.values
 
-    # 5b. Local explanation for current input
-    st.markdown("**Local explanation for the current patient**")
+            shap_vals_current = explainer.shap_values(x_current_proc)
 
-    preproc = model.named_steps["preprocessor"]
-    clf = model.named_steps["classifier"]
+        # Global summary
+        st.markdown("**Global feature importance (SHAP summary plot)**")
+        fig_shap_global = plt.figure(figsize=(8, 4))
+        sv_bg = shap_vals_bg[1] if isinstance(shap_vals_bg, list) else shap_vals_bg
+        shap.summary_plot(
+            sv_bg,
+            X_bg_proc,
+            feature_names=feat_names,
+            show=False,
+        )
+        st.pyplot(fig_shap_global)
 
-    X_input_proc = preproc.transform(df_in)
-    shap_vals_input = explainer.shap_values(X_input_proc)
-    sv_input = shap_vals_input[1][0] if isinstance(shap_vals_input, list) else shap_vals_input[0]
+        # Local explanation as bar chart
+        st.markdown("**Local explanation for this patient (top contributions)**")
+        fig_shap_local = plt.figure(figsize=(6, 4))
+        sv_local = (
+            shap_vals_current[1][0]
+            if isinstance(shap_vals_current, list)
+            else shap_vals_current[0]
+        )
+        contrib = pd.Series(sv_local, index=feat_names).sort_values(
+            key=lambda x: x.abs(), ascending=True
+        )
+        contrib.tail(8).plot(kind="barh")
+        plt.xlabel("SHAP value (impact on model output)")
+        plt.tight_layout()
+        st.pyplot(fig_shap_local)
 
-    contrib = pd.Series(sv_input, index=feature_cols).sort_values(
-        key=lambda x: x.abs(), ascending=False
-    )
 
-    fig2, ax2 = plt.subplots(figsize=(6, 3))
-    contrib.plot(kind="barh", ax=ax2)
-    ax2.invert_yaxis()
-    ax2.set_xlabel("SHAP value (impact on model output)")
-    ax2.set_title("Top feature contributions for this prediction")
-    st.pyplot(fig2)
+# ---------------------------------------------------------------------
+# 6. Batch CSV scoring
+# ---------------------------------------------------------------------
+st.sidebar.header("Batch / CSV scoring")
 
-    st.caption(
-        "Bars to the right (positive SHAP values) push the prediction towards diabetes; "
-        "bars to the left (negative values) push it towards no diabetes."
-    )
+uploaded = st.sidebar.file_uploader(
+    "Upload CSV with columns: "
+    "Pregnancies, Glucose, BloodPressure, SkinThickness, Insulin, "
+    "BMI, DiabetesPedigreeFunction, Age",
+    type=["csv"],
+)
+
+if uploaded is not None:
+    batch_df = pd.read_csv(uploaded)
+    st.subheader("Batch prediction preview")
+    st.dataframe(batch_df.head())
+
+    if st.sidebar.button("Run batch predict"):
+        try:
+            batch_proba = model.predict_proba(batch_df)[:, 1]
+            batch_df["pred_prob"] = batch_proba
+            batch_df["pred_class"] = (
+                batch_df["pred_prob"] >= decision_threshold
+            ).astype(int)
+            st.write(batch_df.head())
+
+            csv_bytes = batch_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download results CSV",
+                csv_bytes,
+                file_name="batch_predictions.csv",
+                mime="text/csv",
+            )
+        except Exception as e:
+            st.error(f"Batch prediction failed: {e}")
