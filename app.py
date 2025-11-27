@@ -280,16 +280,16 @@ if st.button("Predict risk"):
             st.subheader("Global feature importance (SHAP summary plot)")
 
             try:
-                # Let SHAP create its own figure, then grab it
+                # Use training background subset and precomputed shap_bg_vals
+                fig_global, ax_global = plt.subplots(figsize=(7, 4))
                 shap.summary_plot(
                     shap_bg_vals,
                     X_bg_raw[FEATURES],
                     show=False,
                     plot_type="bar"
                 )
-                fig_global = plt.gcf()
                 st.pyplot(fig_global)
-                plt.clf()
+                plt.close(fig_global)
             except Exception as e:
                 st.warning(f"Global SHAP summary failed: {e}")
 
@@ -301,19 +301,66 @@ if st.button("Predict risk"):
                 X_proc_single = preproc.transform(df_in)
 
                 shap_raw_single = shap_explainer.shap_values(X_proc_single)
-                shap_vals_single = normalize_shap_values(shap_raw_single)  # (1, n_features)
-                sv_local = shap_vals_single[0]  # 1D vector
-
+                
+                # More robust handling of SHAP values
+                if isinstance(shap_raw_single, list):
+                    # For binary classification, use class 1 (positive class)
+                    if len(shap_raw_single) == 2:
+                        sv_local = shap_raw_single[1][0]  # First sample, class 1
+                    else:
+                        sv_local = shap_raw_single[0][0]  # First sample, first class
+                else:
+                    shap_vals_single = normalize_shap_values(shap_raw_single)
+                    if shap_vals_single.ndim == 2:
+                        sv_local = shap_vals_single[0]
+                    else:
+                        sv_local = shap_vals_single
+                
+                # Ensure we have the right number of features
+                if len(sv_local) != len(FEATURES):
+                    st.warning(f"SHAP values length ({len(sv_local)}) doesn't match features count ({len(FEATURES)})")
+                    # Take only the first n features
+                    sv_local = sv_local[:len(FEATURES)]
+                
                 feat_names = FEATURES
+                
+                # Create and sort contributions
                 contrib = pd.Series(sv_local, index=feat_names).sort_values(
                     key=lambda x: x.abs(), ascending=False
                 )
 
-                fig_local, ax_local = plt.subplots(figsize=(6, 4))
-                contrib.plot(kind="barh", ax=ax_local)
+                fig_local, ax_local = plt.subplots(figsize=(8, 5))
+                bars = ax_local.barh(range(len(contrib)), contrib.values)
+                
+                # Color bars based on positive/negative impact
+                for i, bar in enumerate(bars):
+                    if contrib.values[i] > 0:
+                        bar.set_color('red')  # Increases risk
+                    else:
+                        bar.set_color('blue')  # Decreases risk
+                
+                ax_local.set_yticks(range(len(contrib)))
+                ax_local.set_yticklabels(contrib.index)
                 ax_local.invert_yaxis()
                 ax_local.set_xlabel("SHAP value (impact on model output)")
+                ax_local.set_title("Feature contributions to prediction")
+                ax_local.axvline(x=0, color='black', linestyle='-', alpha=0.3)
+                
                 st.pyplot(fig_local)
                 plt.close(fig_local)
+                
+                # Show detailed table
+                st.subheader("Detailed feature contributions")
+                contrib_df = pd.DataFrame({
+                    'Feature': contrib.index,
+                    'SHAP Value': [f"{x:.4f}" for x in contrib.values],
+                    'Impact': ['Increases risk' if x > 0 else 'Decreases risk' for x in contrib.values],
+                    'Magnitude': [f"{abs(x):.4f}" for x in contrib.values]
+                }).reset_index(drop=True)
+                st.table(contrib_df)
+                
             except Exception as e:
-                st.warning(f"Local SHAP explanation failed: {e}")
+                st.error(f"Local SHAP explanation failed: {str(e)}")
+                # Add more detailed error info for debugging
+                import traceback
+                st.code(traceback.format_exc())
