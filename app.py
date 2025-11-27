@@ -215,7 +215,7 @@ threshold = st.sidebar.slider(
     step=0.05,
 )
 st.sidebar.caption(
-    "Lower the threshold (e.g., 0.30) to prioritize *recall* in screening contexts."
+    "Lower the threshold (e.g., 0.30) to prioritize **recall** in screening contexts."
 )
 
 input_dict = {
@@ -234,7 +234,7 @@ st.subheader("Input summary")
 st.table(df_in.T.rename(columns={0: "value"}))
 
 if test_auc is not None:
-    st.markdown(f"*Internal test ROC–AUC of trained model:* {test_auc:.3f}")
+    st.markdown(f"**Internal test ROC–AUC of trained model:** `{test_auc:.3f}`")
 
 
 # -------------------------------------------------
@@ -256,7 +256,7 @@ if st.button("Predict risk"):
     st.metric("Predicted class (0 = no diabetes, 1 = diabetes)", pred_class)
     st.metric("Predicted probability of diabetes", f"{prob:.3f}")
     st.caption(
-        f"Prediction computed using a RandomForestClassifier with decision threshold {threshold:.2f}."
+        f"Prediction computed using a RandomForestClassifier with decision threshold `{threshold:.2f}`."
     )
 
     # -------------------------------------------------
@@ -268,7 +268,7 @@ if st.button("Predict risk"):
         if not HAS_SHAP:
             st.warning(
                 "SHAP is not available in this environment. "
-                "Ensure shap is listed in requirements.txt."
+                "Ensure `shap` is listed in `requirements.txt`."
             )
         elif shap_explainer is None or X_bg_proc is None or X_bg_raw is None or shap_bg_vals is None:
             st.warning(
@@ -280,16 +280,16 @@ if st.button("Predict risk"):
             st.subheader("Global feature importance (SHAP summary plot)")
 
             try:
-                # Use training background subset and precomputed shap_bg_vals
-                fig_global, ax_global = plt.subplots(figsize=(7, 4))
+                # Let SHAP create its own figure, then grab it
                 shap.summary_plot(
                     shap_bg_vals,
                     X_bg_raw[FEATURES],
                     show=False,
                     plot_type="bar"
                 )
+                fig_global = plt.gcf()
                 st.pyplot(fig_global)
-                plt.close(fig_global)
+                plt.clf()
             except Exception as e:
                 st.warning(f"Global SHAP summary failed: {e}")
 
