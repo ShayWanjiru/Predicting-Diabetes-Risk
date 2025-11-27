@@ -1,5 +1,5 @@
 # app.py
-# Diabetes risk prediction – Streamlit Cloud friendly
+# Diabetes risk prediction – Streamlit Cloud
 # ---------------------------------------------------
 # Trains the preprocessing + RandomForest pipeline directly from diabetes.csv
 # and uses SHAP for global + local explanations.
@@ -364,3 +364,4 @@ if st.button("Predict risk"):
                 # Add more detailed error info for debugging
                 import traceback
                 st.code(traceback.format_exc())
+
