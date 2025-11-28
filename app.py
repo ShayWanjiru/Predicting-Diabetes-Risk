@@ -301,8 +301,10 @@ if page == "Single Prediction":
     st.markdown("#### Input summary")
     st.table(df_in.T.rename(columns={0: "value"}))
 
+    # ---------------------------
+    # Predict button: store result
+    # ---------------------------
     if st.button("Predict risk"):
-        # Treat zeros as missing for zero-inflated features
         df_in_model = df_in.copy()
         df_in_model[ZERO_INFLATED] = df_in_model[ZERO_INFLATED].replace(0, np.nan)
 
@@ -314,6 +316,20 @@ if page == "Single Prediction":
 
         pred_class = int(prob >= threshold)
 
+        # store in session_state so it survives reruns
+        st.session_state["last_input"] = df_in_model
+        st.session_state["last_prob"] = prob
+        st.session_state["last_pred_class"] = pred_class
+        st.session_state["last_threshold"] = threshold
+
+    # ---------------------------
+    # Show last prediction (if any)
+    # ---------------------------
+    if "last_prob" in st.session_state:
+        prob = st.session_state["last_prob"]
+        pred_class = st.session_state["last_pred_class"]
+        threshold_used = st.session_state.get("last_threshold", threshold)
+
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Predicted class (0 = no diabetes, 1 = diabetes)", pred_class)
@@ -321,7 +337,7 @@ if page == "Single Prediction":
             st.metric("Predicted probability of diabetes", f"{prob:.3f}")
 
         st.caption(
-            f"Prediction computed using a RandomForestClassifier with decision threshold `{threshold:.2f}`."
+            f"Prediction computed using a RandomForestClassifier with decision threshold `{threshold_used:.2f}`."
         )
 
         # SHAP explanations
@@ -343,6 +359,8 @@ if page == "Single Prediction":
                     "This may happen if the preprocessing step is incompatible."
                 )
             else:
+                df_in_model = st.session_state["last_input"]
+
                 # ---------- Global SHAP summary ----------
                 st.subheader("Global feature importance (SHAP summary plot)")
                 try:
@@ -426,7 +444,6 @@ elif page == "Model Performance":
     st.subheader("Model performance (Random Forest)")
 
     st.markdown("#### Test-set metrics")
-    # simplest & safest: no styling errors
     st.dataframe(metrics_df, use_container_width=True)
 
     # ROC curve
